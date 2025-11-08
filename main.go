@@ -36,6 +36,8 @@ func main() {
 		handlePermissions()
 	case "users":
 		handleUsers()
+	case "docs":
+		handleDocs()
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown command: %s\n", command)
 		printUsage()
@@ -49,6 +51,7 @@ func printUsage() {
 	fmt.Println("  signup        Trigger servicedesk signup")
 	fmt.Println("  permissions   Check user permissions")
 	fmt.Println("  users         Enumerate users across service desks")
+	fmt.Println("  docs          Enumerate exposed Confluence documentation")
 	fmt.Println("\nRun 'jira-servicedesk-enum <command> -h' for command-specific help")
 }
 
@@ -118,6 +121,29 @@ func handleUsers() {
 
 	if err := enumerateUsers(*url, *cookie, *maxUsers, *deskID, *query, *alphabet, selfAccountID, *output); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: user enumeration failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func handleDocs() {
+	fs := flag.NewFlagSet("docs", flag.ExitOnError)
+	url := fs.String("url", "", "Jira URL (e.g., https://example.atlassian.net)")
+	cookie := fs.String("cookie", "", "Session cookie value (customer.account.session.token)")
+	searchTerm := fs.String("query", "", "Search query (optional, default: enumerate all)")
+	limit := fs.Int("limit", 50, "Maximum results per query")
+	alphabet := fs.String("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789", "Alphabet for search expansion")
+	output := fs.String("output", "", "Output CSV file path (optional)")
+
+	fs.Parse(os.Args[2:])
+
+	if *url == "" || *cookie == "" {
+		fmt.Fprintln(os.Stderr, "Error: --url and --cookie are required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if err := enumerateDocs(*url, *cookie, *searchTerm, *limit, *alphabet, *output); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: document enumeration failed: %v\n", err)
 		os.Exit(1)
 	}
 }

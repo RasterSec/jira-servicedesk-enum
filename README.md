@@ -1,6 +1,6 @@
 # jira-servicedesk-enum
 
-A Go tool for enumerating Atlassian Jira Service Desk users, checking permissions, and triggering signups. Useful for security assessments and penetration testing. Brought to you by the [RasterSec](https://www.rastersec.com) team 🙌.
+A Go tool for enumerating Atlassian Jira Service Desk users, checking user permissions, detecting leaked Confluence pages and triggering signups. Useful for security assessments and penetration testing. Brought to you by the [RasterSec](https://www.rastersec.com) team 🙌.
 
 ## Installation
 
