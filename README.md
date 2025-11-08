@@ -119,6 +119,17 @@ Use a custom alphabet for search expansion:
   --max 0
 ```
 
+### Enumerate Confluence Pages
+Sometimes internal documentation is exposed through the servicedesk.
+
+```bash
+./jira-service-desk-enum docs \
+  --url https://example.atlassian.net \
+  --cookie "secret..."
+```
+
+You may want to check for a single character first by using `--alphabet "a"`.
+
 ## How It Works
 
 ### Alphabet Search Optimization
