@@ -111,14 +111,6 @@ func enumerateDocs(baseURL, cookie string, searchTerm string, limit int, alphabe
 
 		fmt.Printf("[%d] Query: %-30s | Found: %4d total (%d new) | Unique docs: %d\n",
 			totalSearched, truncateString(query, 30), total, newDocs, len(docMap))
-
-		// If we got max results and searching broadly, expand the search
-		if searchTerm == "" && len(docs) >= limit && newDocs > 0 {
-			// Expand this query by appending alphabet characters
-			for _, char := range alphabet {
-				queries = append(queries, query+string(char))
-			}
-		}
 	}
 
 	fmt.Printf("\n\nTotal unique documents found: %d\n", len(docMap))
@@ -162,12 +154,8 @@ func searchDocuments(baseURL, cloudID, cookie, searchTerm string, limit int) ([]
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0")
-	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", fmt.Sprintf("customer.account.session.token=%s", cookie))
-	req.Header.Set("Referer", fmt.Sprintf("%s/servicedesk/customer/portals", baseURL))
-	req.Header.Set("Origin", baseURL)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
