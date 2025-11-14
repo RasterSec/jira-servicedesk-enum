@@ -102,7 +102,10 @@ func handleUsers() {
 	maxUsers := fs.Int("max", 50, "Maximum users to fetch per service desk (0 = unlimited)")
 	deskID := fs.String("desk", "", "Specific service desk ID to enumerate (optional)")
 	query := fs.String("query", "", "Custom search query (optional, skips automatic enumeration)")
-	alphabet := fs.String("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789", "Custom alphabet for search expansion")
+	alphabet1 := fs.String("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789", "Alphabet for layer 1 search expansion")
+	alphabet2 := fs.String("alphabet2", "abcdefghijklmnopqrstuvwxyz", "Alphabet for layer 2+ search expansion")
+	workers := fs.Int("workers", 10, "Number of concurrent workers")
+	timeout := fs.Int("timeout", 10, "HTTP request timeout in seconds")
 	output := fs.String("output", "", "Output CSV file path (optional)")
 
 	fs.Parse(os.Args[2:])
@@ -119,7 +122,7 @@ func handleUsers() {
 		os.Exit(1)
 	}
 
-	if err := enumerateUsers(*url, *cookie, *maxUsers, *deskID, *query, *alphabet, selfAccountID, *output); err != nil {
+	if err := enumerateUsers(*url, *cookie, *maxUsers, *deskID, *query, *alphabet1, *alphabet2, selfAccountID, *output, *workers, *timeout); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: user enumeration failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -129,9 +132,10 @@ func handleDocs() {
 	fs := flag.NewFlagSet("docs", flag.ExitOnError)
 	url := fs.String("url", "", "Jira URL (e.g., https://example.atlassian.net)")
 	cookie := fs.String("cookie", "", "Session cookie value (customer.account.session.token)")
-	searchTerm := fs.String("query", "", "Search query (optional, default: enumerate all)")
-	limit := fs.Int("limit", 50, "Maximum results per query")
-	alphabet := fs.String("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789", "Alphabet for search expansion")
+	alphabet1 := fs.String("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789", "Alphabet for layer 1 search expansion")
+	alphabet2 := fs.String("alphabet2", "abcdefghijklmnopqrstuvwxyz", "Alphabet for layer 2+ search expansion")
+	workers := fs.Int("workers", 10, "Number of concurrent workers")
+	timeout := fs.Int("timeout", 10, "HTTP request timeout in seconds")
 	output := fs.String("output", "", "Output CSV file path (optional)")
 
 	fs.Parse(os.Args[2:])
@@ -142,7 +146,7 @@ func handleDocs() {
 		os.Exit(1)
 	}
 
-	if err := enumerateDocs(*url, *cookie, *searchTerm, *limit, *alphabet, *output); err != nil {
+	if err := enumerateDocs(*url, *cookie, *alphabet1, *alphabet2, *output, *workers, *timeout); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: document enumeration failed: %v\n", err)
 		os.Exit(1)
 	}

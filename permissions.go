@@ -18,6 +18,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type PermissionsResponse struct {
@@ -45,7 +46,7 @@ type MyPermission struct {
 }
 
 func checkPermissions(baseURL, cookie string) error {
-	client := newClient(baseURL, "")
+	client := newClient(baseURL, "", 10*time.Second)
 
 	resp, err := client.get("/rest/api/3/permissions")
 	if err != nil {

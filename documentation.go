@@ -16,214 +16,298 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/csv"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
-// GraphQL response structures for document search
 type DocsGraphQLResponse struct {
 	Data struct {
 		HelpObjectStoreSearchArticles struct {
-			Results []struct {
-				ARI         string `json:"ari"`
-				Title       string `json:"title"`
-				DisplayLink string `json:"displayLink"`
-				Metadata    struct {
-					SearchStrategy string `json:"searchStrategy"`
-					IsExternal     bool   `json:"isExternal"`
-				} `json:"metadata"`
-				SourceSystem string `json:"sourceSystem"`
-			} `json:"results"`
 			TotalCount int `json:"totalCount"`
+			Results    []struct {
+				AbsoluteURL   string `json:"absoluteUrl"`
+				ARI           string `json:"ari"`
+				ContainerARI  string `json:"containerAri"`
+				ContainerName string `json:"containerName"`
+				Title         string `json:"title"`
+			} `json:"results"`
 		} `json:"helpObjectStore_searchArticles"`
 	} `json:"data"`
-}
-
-type AccessibleResource struct {
-	ID   string `json:"id"`
-	URL  string `json:"url"`
-	Name string `json:"name"`
+	Errors []struct {
+		Message string        `json:"message"`
+		Path    []interface{} `json:"path"`
+	} `json:"errors"`
 }
 
 type Document struct {
-	ARI          string
-	Title        string
-	DisplayLink  string
-	FullURL      string
-	SourceSystem string
-	IsExternal   bool
+	ARI           string
+	Title         string
+	AbsoluteURL   string
+	ContainerARI  string
+	ContainerName string
 }
 
 type TenantInfo struct {
 	CloudID string `json:"cloudId"`
 }
 
-func enumerateDocs(baseURL, cookie string, searchTerm string, limit int, alphabet, output string) error {
-	fmt.Println("Extracting cloud ID from API")
+type searchTask struct {
+	query string
+	depth int
+}
 
-	cloudID, err := getCloudIDFromAPI(baseURL, cookie)
+type searchResult struct {
+	query      string
+	depth      int
+	totalCount int
+	docs       []Document
+	err        error
+}
+
+func enumerateDocs(baseURL, cookie, alphabet1, alphabet2, output string, workers, timeout int) error {
+	client := newClient(baseURL, cookie, time.Duration(timeout)*time.Second)
+
+	cloudID, err := getCloudID(client)
 	if err != nil {
 		return fmt.Errorf("failed to get cloud ID: %w", err)
 	}
-	fmt.Printf("Extracted Cloud ID: %s\n\n", cloudID)
+
+	fmt.Println("Fetching all documents for cloud ID: " + cloudID)
+	fmt.Println("Alphabet (layer 1): " + alphabet1)
+	fmt.Println("Alphabet (layer 2+): " + alphabet2)
+	fmt.Printf("Concurrent workers: %d\n", workers)
+	fmt.Printf("Request timeout: %ds\n", timeout)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	interruptedChan := setupSignalHandler(cancel)
 
 	docMap := make(map[string]Document)
-	totalSearched := 0
+	taskQueue := make(chan searchTask, 5000)
+	results := make(chan searchResult, workers*2)
 
-	// Build search queries
-	var queries []string
-	if searchTerm != "" {
-		queries = []string{searchTerm}
-	} else {
-		// Start with single characters from alphabet
-		for _, char := range alphabet {
-			queries = append(queries, string(char))
-		}
+	// Worker pool
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case task, ok := <-taskQueue:
+					if !ok {
+						return
+					}
+
+					totalCount, docs, err := searchDocuments(client, cloudID, task.query, 2147483647)
+
+					select {
+					case results <- searchResult{
+						query:      task.query,
+						depth:      task.depth,
+						totalCount: totalCount,
+						docs:       docs,
+						err:        err,
+					}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
 	}
 
-	fmt.Printf("Starting document enumeration with %d initial queries...\n\n", len(queries))
+	// Results processor - single goroutine processes all results
+	var processorWg sync.WaitGroup
+	processorWg.Add(1)
+	go func() {
+		defer processorWg.Done()
+		pendingTasks := 1
+		searchCount := 0
+		expectedTotal := 0
 
-	for len(queries) > 0 {
-		query := queries[0]
-		queries = queries[1:]
+		for result := range results {
+			pendingTasks--
+			searchCount++
 
-		totalSearched++
+			if result.err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: search for '%s' failed: %v\n", result.query, result.err)
+				if pendingTasks == 0 {
+					cancel()
+					return
+				}
+				continue
+			}
 
-		docs, total, err := searchDocuments(baseURL, cloudID, cookie, query, limit)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error searching (query=%s): %v\n", query, err)
-			continue
-		}
+			if searchCount == 1 {
+				expectedTotal = result.totalCount
+			}
 
-		newDocs := 0
-		for _, doc := range docs {
-			if _, exists := docMap[doc.ARI]; !exists {
-				docMap[doc.ARI] = doc
-				newDocs++
+			newDocs := 0
+			for _, doc := range result.docs {
+				if _, exists := docMap[doc.ARI]; !exists {
+					docMap[doc.ARI] = doc
+					newDocs++
+				}
+			}
+			uniqueCount := len(docMap)
+
+			truncated := len(result.docs) < result.totalCount
+			status := "✓"
+			if truncated {
+				status = "⚠"
+			}
+
+			queryDisplay := result.query
+			if queryDisplay == "" {
+				queryDisplay = "(empty)"
+			}
+
+			fmt.Printf("[%d] %s Query: %s | Results: %4d/%d | New: %3d | Unique: %d/%d | Pending: %d\n",
+				searchCount, status, queryDisplay, len(result.docs), result.totalCount, newDocs, uniqueCount, expectedTotal, pendingTasks)
+
+			if truncated {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					alphabet := alphabet2
+					if result.depth == 0 {
+						alphabet = alphabet1
+					}
+
+					for _, char := range alphabet {
+						newTask := searchTask{query: result.query + string(char), depth: result.depth + 1}
+						pendingTasks++
+
+						select {
+						case <-ctx.Done():
+							return
+						case taskQueue <- newTask:
+						}
+					}
+				}
+			}
+
+			if pendingTasks == 0 || (uniqueCount >= expectedTotal && expectedTotal > 0) {
+				cancel()
+				return
 			}
 		}
+	}()
 
-		fmt.Printf("[%d] Query: %-30s | Found: %4d total (%d new) | Unique docs: %d\n",
-			totalSearched, truncateString(query, 30), total, newDocs, len(docMap))
+	taskQueue <- searchTask{query: "", depth: 0}
+
+	go func() {
+		<-ctx.Done()
+		close(taskQueue)
+	}()
+
+	wg.Wait()
+	close(results)
+	processorWg.Wait()
+
+	select {
+	case <-interruptedChan:
+		fmt.Println("\n*** Interrupted by user ***")
+	default:
 	}
 
-	fmt.Printf("\n\nTotal unique documents found: %d\n", len(docMap))
+	fmt.Printf("\nTotal documents found: %d\n", len(docMap))
 
 	if len(docMap) == 0 {
 		fmt.Println("No documents found")
 		return nil
 	}
 
-	if output != "" {
-		return writeDocsToCSV(docMap, output)
+	// Convert map to slice
+	finalDocs := make([]Document, 0, len(docMap))
+	for _, doc := range docMap {
+		finalDocs = append(finalDocs, doc)
 	}
 
-	printDocuments(docMap)
+	if output != "" {
+		return writeDocsToCSV(finalDocs, output)
+	}
+
+	printDocuments(finalDocs)
 	return nil
 }
 
-func searchDocuments(baseURL, cloudID, cookie, searchTerm string, limit int) ([]Document, int, error) {
-	graphqlHash := "2b7701d308127724d13b7beb2b1c606c10713f908a96b13c96db5350d5ecc6ef"
-	endpoint := fmt.Sprintf("%s/gateway/api/graphql/pq/%s", baseURL, graphqlHash)
+func searchDocuments(client *Client, cloudID, queryTerm string, limit int) (int, []Document, error) {
+	query := `query MyQuery($cloudId:ID!,$queryTerm:String,$limit:Int!){helpObjectStore_searchArticles(cloudId:$cloudId,queryTerm:$queryTerm,limit:$limit){...on HelpObjectStoreArticleSearchResults{totalCount results{absoluteUrl ari containerAri containerName title}}}}`
+
+	variables := map[string]interface{}{
+		"cloudId": cloudID,
+		"limit":   limit,
+	}
+
+	if queryTerm != "" {
+		variables["queryTerm"] = queryTerm
+	}
 
 	payload := map[string]interface{}{
-		"variables": map[string]interface{}{
-			"cloudId":               cloudID,
-			"queryTerm":             searchTerm,
-			"portalIds":             []string{},
-			"categoryIds":           []string{},
-			"limit":                 limit,
-			"highlight":             false,
-			"isSourceSystemEnabled": true,
-		},
+		"query":         query,
+		"operationName": "MyQuery",
+		"variables":     variables,
 	}
 
-	jsonData, err := json.Marshal(payload)
+	resp, err := client.post("/gateway/api/graphql", payload)
 	if err != nil {
-		return nil, 0, fmt.Errorf("marshal payload: %w", err)
+		return 0, nil, fmt.Errorf("execute request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Cookie", fmt.Sprintf("customer.account.session.token=%s", cookie))
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != 200 {
+		body, _ := readBody(resp)
+		return 0, nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response DocsGraphQLResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, 0, fmt.Errorf("parse response: %w", err)
+	if err := unmarshalJSON(resp, &response); err != nil {
+		return 0, nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	if len(response.Errors) > 0 {
+		return 0, nil, fmt.Errorf("GraphQL errors: %v", response.Errors)
 	}
 
 	docs := make([]Document, 0, len(response.Data.HelpObjectStoreSearchArticles.Results))
 	for _, result := range response.Data.HelpObjectStoreSearchArticles.Results {
 		docs = append(docs, Document{
-			ARI:          result.ARI,
-			Title:        result.Title,
-			DisplayLink:  result.DisplayLink,
-			FullURL:      baseURL + result.DisplayLink,
-			SourceSystem: result.SourceSystem,
-			IsExternal:   result.Metadata.IsExternal,
+			ARI:           result.ARI,
+			Title:         result.Title,
+			AbsoluteURL:   result.AbsoluteURL,
+			ContainerARI:  result.ContainerARI,
+			ContainerName: result.ContainerName,
 		})
 	}
 
-	return docs, response.Data.HelpObjectStoreSearchArticles.TotalCount, nil
+	return response.Data.HelpObjectStoreSearchArticles.TotalCount, docs, nil
 }
 
-func getCloudIDFromAPI(baseURL, cookie string) (string, error) {
-	client := &http.Client{}
-
-	req, err := http.NewRequest("GET", baseURL+"/_edge/tenant_info", nil)
+func getCloudID(client *Client) (string, error) {
+	resp, err := client.get("/_edge/tenant_info")
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Cookie", fmt.Sprintf("customer.account.session.token=%s", cookie))
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", fmt.Errorf("get tenant info: %w", err)
 	}
 
 	var t TenantInfo
-	if err := json.Unmarshal(body, &t); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+	if err := unmarshalJSON(resp, &t); err != nil {
+		return "", fmt.Errorf("parse tenant info: %w", err)
 	}
 
 	return t.CloudID, nil
 }
 
-func writeDocsToCSV(docMap map[string]Document, outputPath string) error {
+func writeDocsToCSV(docs []Document, outputPath string) error {
 	file, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("create CSV file: %w", err)
@@ -233,41 +317,28 @@ func writeDocsToCSV(docMap map[string]Document, outputPath string) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	if err := writer.Write([]string{"Title", "URL", "ARI", "Source", "IsExternal"}); err != nil {
+	if err := writer.Write([]string{"ARI", "Title", "URL", "Container", "Container ARI"}); err != nil {
 		return fmt.Errorf("write CSV header: %w", err)
 	}
 
-	for _, doc := range docMap {
-		isExternal := "false"
-		if doc.IsExternal {
-			isExternal = "true"
-		}
-		if err := writer.Write([]string{doc.Title, doc.FullURL, doc.ARI, doc.SourceSystem, isExternal}); err != nil {
+	for _, doc := range docs {
+		if err := writer.Write([]string{doc.ARI, doc.Title, doc.AbsoluteURL, doc.ContainerName, doc.ContainerARI}); err != nil {
 			return fmt.Errorf("write CSV row: %w", err)
 		}
 	}
 
-	fmt.Printf("\nWrote %d documents to %s\n", len(docMap), outputPath)
+	fmt.Printf("\nWrote %d documents to %s\n", len(docs), outputPath)
 	return nil
 }
 
-func printDocuments(docMap map[string]Document) {
-	fmt.Printf("\n\nDiscovered Documents:\n")
+func printDocuments(docs []Document) {
+	fmt.Println("\n\nDiscovered Documents:")
 	fmt.Println(strings.Repeat("-", 100))
 
-	for _, doc := range docMap {
-		fmt.Printf("\nTitle: %s\n", doc.Title)
-		fmt.Printf("  URL: %s\n", doc.FullURL)
-		fmt.Printf("  Source: %s\n", doc.SourceSystem)
-		if doc.IsExternal {
-			fmt.Printf("  External: true\n")
-		}
+	for _, doc := range docs {
+		fmt.Println("\nARI: " + doc.ARI)
+		fmt.Println("  Title: " + doc.Title)
+		fmt.Println("  URL: " + doc.AbsoluteURL)
+		fmt.Println("  Container: " + doc.ContainerName + " (" + doc.ContainerARI + ")")
 	}
-}
-
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }

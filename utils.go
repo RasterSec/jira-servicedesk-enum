@@ -16,30 +16,24 @@
 package main
 
 import (
-	"fmt"
-	"time"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
-func signup(baseURL, email string) error {
-	client := newClient(baseURL, "", 10*time.Second)
+// setupSignalHandler sets up signal handling for graceful shutdown
+// Returns a channel that will be closed when interrupted
+func setupSignalHandler(cancel context.CancelFunc) chan struct{} {
+	interrupted := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	body := map[string]string{
-		"email":          email,
-		"secondaryEmail": "",
-	}
+	go func() {
+		<-sigChan
+		close(interrupted)
+		cancel()
+	}()
 
-	resp, err := client.post("/rest/servicedesk/1/customer/pages/user/signup", body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case 204:
-		return nil
-	case 403:
-		return fmt.Errorf("signup forbidden (403)")
-	default:
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
+	return interrupted
 }
