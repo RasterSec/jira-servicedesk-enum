@@ -83,8 +83,12 @@ func (c *Client) doWithRetry(method, path string, body []byte) (*http.Response, 
 		}
 
 		if c.cookie != "" {
+			cookieName := "customer.account.session.token" 
+			if *tenantSession {
+				cookieName = "tenant.session.token"
+			}
 			req.AddCookie(&http.Cookie{
-				Name:  "customer.account.session.token",
+				Name:  cookieName,
 				Value: c.cookie,
 			})
 		}

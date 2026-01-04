@@ -235,6 +235,10 @@ Press `Ctrl+C` at any time to gracefully stop enumeration and display results co
 - `--timeout`: HTTP request timeout in seconds (default: `10`)
 - `--output`: Output CSV file path (optional)
 
+### Cookie
+
+-`--tenantsession`: Change session cookie name from `customer.account.session.token` to `tenant.session.token`.
+
 ## License
 
 Licensed under the Apache License, Version 2.0.

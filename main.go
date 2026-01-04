@@ -21,6 +21,8 @@ import (
 	"os"
 )
 
+var tenantSession *bool
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -80,6 +82,7 @@ func handlePermissions() {
 	fs := flag.NewFlagSet("permissions", flag.ExitOnError)
 	url := fs.String("url", "", "Jira URL (e.g., https://example.atlassian.net)")
 	cookie := fs.String("cookie", "", "Session cookie value (customer.account.session.token)")
+	tenantSession = fs.Bool("tenantsession", false, "Set session cookie name to tenant.session.token")
 
 	fs.Parse(os.Args[2:])
 
@@ -107,6 +110,7 @@ func handleUsers() {
 	workers := fs.Int("workers", 10, "Number of concurrent workers")
 	timeout := fs.Int("timeout", 10, "HTTP request timeout in seconds")
 	output := fs.String("output", "", "Output CSV file path (optional)")
+	tenantSession = fs.Bool("tenantsession", false, "Set session cookie name to tenant.session.token")
 
 	fs.Parse(os.Args[2:])
 
@@ -137,6 +141,7 @@ func handleDocs() {
 	workers := fs.Int("workers", 10, "Number of concurrent workers")
 	timeout := fs.Int("timeout", 10, "HTTP request timeout in seconds")
 	output := fs.String("output", "", "Output CSV file path (optional)")
+	tenantSession = fs.Bool("tenantsession", false, "Set session cookie name to tenant.session.token")
 
 	fs.Parse(os.Args[2:])
 
